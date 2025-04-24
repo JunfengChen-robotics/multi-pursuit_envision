@@ -8,6 +8,7 @@ import torch
 
 
 MAX_STEPS = 10000000
+TRAIN_OR_TEST = "train"  # "train" or "test"
 
 
 def train(env, render=False):
@@ -19,20 +20,17 @@ def train(env, render=False):
     save_dir = "checkpoints"
     os.makedirs(save_dir, exist_ok=True)
     
-    
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    
-    
     
     sac_agent = SACAgent(state_dim, action_dim)
     total_steps = 0
     while total_steps < MAX_STEPS:
-        obs, _ = env.reset()
         episode_rewards = {f"agent_{i}": 0.0 for i in range(env.num_police)}
         done = False
         episode = 0
         episode_length = 0
+        obs, _ = env.reset()
         while not done:
             if render:
                 env.render()
@@ -79,7 +77,7 @@ def train(env, render=False):
         episode += 1
         
         avg_reward = np.mean(list(episode_rewards.values()))
-        writer.add_scalar("Episode_Reward", avg_reward, total_steps)
+        writer.add_scalar("Episode_Reward", avg_reward, episode)
         writer.add_scalar("Episode_Length", episode_length, episode)
         
         if total_steps % 1000 == 0:
@@ -91,5 +89,5 @@ def train(env, render=False):
     
 
 if __name__ == "__main__":
-    env = ChaseEnv(num_police=3)
+    env = ChaseEnv(num_police=3, train_or_test=TRAIN_OR_TEST)
     train(env, render=True)

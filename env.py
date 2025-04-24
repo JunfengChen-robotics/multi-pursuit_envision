@@ -2,13 +2,13 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 from shapely.geometry import Point, Polygon
-from evader import simple_thief_policy
 import yaml, os
 from police import PoliceAgent
 from evader import ThiefAgent
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon, Circle, RegularPolygon
 from matplotlib.path import Path
+from evader.core.evader import Evader
 
 CASE = 'case5'
 COLOR = [
@@ -23,15 +23,23 @@ COLOR = [
 ]
 
 path = os.path.dirname(os.path.abspath(__file__))
-yaml_path = os.path.join(path, "coord.yaml")
-with open(yaml_path, "r") as stream:
+coord_yaml_path = os.path.join(path, "config","coord.yaml")
+
+
+with open(coord_yaml_path, "r") as stream:
     try:
         coords = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
         print(exc)
-        
 OBSTACLES = coords[CASE]
-SIZE = 8.0 if CASE == 'case5' else 10.0
+
+world_yaml_path = os.path.join(path, "config", "world.yaml")
+with open(world_yaml_path, "r") as stream:
+    try:
+        world = yaml.safe_load(stream)
+    except yaml.YAMLError as exc:
+        print(exc)
+SIZE = world['map']['size'][CASE]
 Boundary = [[[0,0], [0, SIZE], [-0.2, SIZE], [-0.2, 0]], 
                          [[0, SIZE], [SIZE, SIZE], [SIZE, SIZE+0.2], [0, SIZE+0.2]],
                          [[SIZE, 0], [SIZE+0.2, 0], [SIZE+0.2, SIZE], [SIZE, SIZE]],
@@ -45,8 +53,6 @@ class ChaseEnv(gym.Env):
         self.num_police = num_police
         self.size = SIZE
         self.dt = 0.05
-        self.capture_distance = 0.8
-        self.robot_radius = 0.1
         # action: [dx, dy, turn_rate]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
@@ -63,7 +69,13 @@ class ChaseEnv(gym.Env):
                                           obstacles=self.obstacles,
                                           boundary=Boundary)
                               for i in range(self.num_police)]
+        # initilization of evader
+        # ===================================
         self.thief = ThiefAgent(init_pos=np.random.uniform(1, 7, size=2))
+        # self.thief = Evader(np.array([0,0]))
+        # self.thief.update_env(self.police_agents)
+        # self.thief.get_env_info(CASE)
+        # ====================================
         self.steps = 0
         obs = {f"agent_{p.id}": p.get_obs(self.thief.pos) for p in self.police_agents}
         return obs, {}
@@ -74,11 +86,20 @@ class ChaseEnv(gym.Env):
             v = np.clip(action_dict[f"agent_{i}"][:2], -1, 1.0)
             self.police_agents[i].update(v, self.dt)
 
+        # eavder execution
+        # ==============================
         self.thief.update([agent.pos for agent in self.police_agents])
+        # self.thief.local_info_and_collision_check()
+        # self.thief.update_env(self.police_agents)
+        # self.thief.update_memory()
+        # self.thief.select_goal()
+        # self.thief.sel_stgy(self.thief.world)
+        # self.thief.move()
+        # ==============================
 
         obs = {f"agent_{i}": self.police_agents[i].get_obs(self.thief.pos) for i in range(self.num_police)}
         reward = {f"agent_{i}": self.compute_reward(i) for i in range(self.num_police)}
-        done = any(np.linalg.norm(p.pos - self.thief.pos) < self.capture_distance for p in self.police_agents)
+        done = any(np.linalg.norm(p.pos - self.thief.pos) < p.capture_distance for p in self.police_agents)
         done_dict = {f"agent_{i}": done for i in range(self.num_police)}
         done_dict["__all__"] = done
 
@@ -93,19 +114,19 @@ class ChaseEnv(gym.Env):
         reward += -0.1 * dist_to_thief
 
         # 2. 是否抓住小偷
-        if dist_to_thief < self.capture_distance:
+        if dist_to_thief < agent.capture_distance:
             reward += 100.0
 
         # 3. 是否撞墙（激光雷达值小于机器人半径）
         lidar_scan = agent._lidar(self.thief.pos)
-        if np.any(lidar_scan <= self.robot_radius):
+        if np.any(lidar_scan <= agent.robot_radius):
             reward -= 2.0
 
         # 4. 是否撞到其他警察
         for j, other_agent in enumerate(self.police_agents):
             if j != idx:
                 dist = np.linalg.norm(agent.pos - other_agent.pos)
-                if dist < self.robot_radius:
+                if dist < agent.robot_radius:
                     reward -= 5.0
         
         # 5. 是否撞到障碍物
@@ -114,7 +135,7 @@ class ChaseEnv(gym.Env):
         collided_with_boundary = False
         for poly_pts in Boundary:  # self.boundaries 应设置为 Boundary
             boundary_poly = Polygon(poly_pts)
-            if boundary_poly.contains(agent_point) or boundary_poly.exterior.distance(agent_point) <= self.robot_radius:
+            if boundary_poly.contains(agent_point) or boundary_poly.exterior.distance(agent_point) <= agent.robot_radius:
                 collided_with_boundary = True
                 break
         if collided_with_boundary:
@@ -146,7 +167,7 @@ class ChaseEnv(gym.Env):
             c = Circle(agent.pos, radius=0.1, color=COLOR[id])
             self.ax.add_patch(c)
             self.ax.text(agent.pos[0]+0.1, agent.pos[1]+0.1, str(agent.id), fontsize=12, ha='center', va='center', color='red')
-            c_a = Circle(agent.pos, radius=self.capture_distance, color=COLOR[id], alpha=0.2)
+            c_a = Circle(agent.pos, radius=agent.capture_distance, color=COLOR[id], alpha=0.2)
             self.ax.add_patch(c_a)
             # 画雷达线束
             readings = agent._lidar(agent.pos)

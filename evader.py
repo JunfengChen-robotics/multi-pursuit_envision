@@ -19,3 +19,11 @@ class ThiefAgent:
         direction = np.random.uniform(-1, 1, size=2)
         self.pos += 0.1 * direction / np.linalg.norm(direction)
         self.pos = np.clip(self.pos, 0, 8)
+        
+        
+        
+
+        
+
+
+

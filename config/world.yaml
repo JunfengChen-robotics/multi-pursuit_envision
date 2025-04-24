@@ -1,0 +1,30 @@
+map:
+        size:
+          case1: 2.5 # 地图尺寸可以改变
+          case2: 5 
+          case3: 8
+          case4: 5
+          case5: 4
+          case6: 5
+          case7: 5
+          case8: 5
+          case9: 5
+          case10: 5
+
+        dx:
+          case1: 0.1 # 地图尺寸可以改变
+          case2: 0.1
+          case3: 0.1
+          case4: 0.1
+          case5: 0.1
+          case6: 0.1
+          case7: 0.1
+          case8: 0.1
+          case9: 0.1
+          case10: 0.1
+
+        timestep: 0.05
+
+
+global_parameters:
+        default_randomseed: 0

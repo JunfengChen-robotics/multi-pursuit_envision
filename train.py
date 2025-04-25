@@ -17,7 +17,7 @@ def train(env, render=False):
     log_dir = "logs/"+args.case
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
-    save_dir = "checkpoints"+args.case
+    save_dir = "checkpoints/"+args.case
     os.makedirs(save_dir, exist_ok=True)
     
     state_dim = env.observation_space.shape[0]

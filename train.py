@@ -3,7 +3,7 @@ import numpy as np
 from policy import SACAgent
 from torch.utils.tensorboard import SummaryWriter
 import os
-import torch
+import argparse
 
 
 
@@ -14,10 +14,10 @@ TRAIN_OR_TEST = "train"  # "train" or "test"
 def train(env, render=False):
     
     # 设置TensorBoard日志目录
-    log_dir = "logs/sac"
+    log_dir = "logs/"+args.case
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
-    save_dir = "checkpoints"
+    save_dir = "checkpoints"+args.case
     os.makedirs(save_dir, exist_ok=True)
     
     state_dim = env.observation_space.shape[0]
@@ -91,5 +91,13 @@ def train(env, render=False):
     
 
 if __name__ == "__main__":
-    env = ChaseEnv(num_police=3, train_or_test=TRAIN_OR_TEST)
-    train(env, render=False)
+    
+    argparser = argparse.ArgumentParser(description="Train the SAC agent in the Chase environment.")
+    argparser.add_argument("--num_police", type=int, default=3, help="Number of police agents.")
+    argparser.add_argument("--train_or_test", type=str, default="train", choices=["train", "test"], help="Train or test mode.")
+    argparser.add_argument("--render", action="store_true", help="Render the environment.")
+    argparser.add_argument("--case", type=str, default="case5", choices=["case5", "case6", "case10"], help="Case number for predefined positions.")
+    argparser.add_argument("--max_steps", type=int, default=10000000, help="Maximum number of steps.")
+    args = argparser.parse_args()
+    env = ChaseEnv(args)
+    train(env, render=args.render)

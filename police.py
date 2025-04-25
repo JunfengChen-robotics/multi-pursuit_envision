@@ -10,7 +10,7 @@ class PoliceAgent:
         self.obstacles = obstacles
         self.lidar_range = 3
         self.max_velocity = 1.0
-        self.capture_range = 1.5
+        self.capture_range = 0.8
         self.robot_distance = 0.1
         self.liard_readings = 36
         self.boundary = [Path(ob) for ob in boundary]

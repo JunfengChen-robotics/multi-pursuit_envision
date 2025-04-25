@@ -11,7 +11,6 @@ from matplotlib.path import Path
 from evader.core.evader import Evader
 from config.position import InitPos
 
-CASE = 'case5'
 COLOR = [
     "darkgreen",
     "darkblue",
@@ -23,66 +22,14 @@ COLOR = [
     "red"
 ]
 
-path = os.path.dirname(os.path.abspath(__file__))
-coord_yaml_path = os.path.join(path, "config","coord.yaml")
-
-
-with open(coord_yaml_path, "r") as stream:
-    try:
-        coords = yaml.safe_load(stream)
-    except yaml.YAMLError as exc:
-        print(exc)
-OBSTACLES = coords[CASE]
-
-world_yaml_path = os.path.join(path, "config", "world.yaml")
-with open(world_yaml_path, "r") as stream:
-    try:
-        world = yaml.safe_load(stream)
-    except yaml.YAMLError as exc:
-        print(exc)
-SIZE = world['map']['size'][CASE]*2
-Boundary = [[[0,0], [0, SIZE], [-0.2, SIZE], [-0.2, 0]], 
-                         [[0, SIZE], [SIZE, SIZE], [SIZE, SIZE+0.2], [0, SIZE+0.2]],
-                         [[SIZE, 0], [SIZE+0.2, 0], [SIZE+0.2, SIZE], [SIZE, SIZE]],
-                         [[0, -0.2], [SIZE, -0.2], [SIZE, 0], [0, 0]]
-                         ]
-
-
-def generate_random_positions(robot_num, obstacles):
-    def is_valid(pos, existing_positions, min_dist=0.5):
-        """检查位置是否在地图内、在障碍物外，并且离已有位置不太近"""
-        x, y = pos
-        if not (0 < x < SIZE and 0 < y < SIZE):
-            return False
-        point = np.array([x, y])
-        if any(poly.contains_point(point) for poly in obstacles):
-            return False
-        if any(np.linalg.norm(np.array(pos) - np.array(p)) < min_dist for p in existing_positions):
-            return False
-        return True
-    
-    import random
-    positions = []
-    max_trials = 1000
-    for _ in range(robot_num):
-        for _ in range(max_trials):
-            x = random.uniform(0.5, SIZE - 0.5)
-            y = random.uniform(0.5, SIZE - 0.5)
-            if is_valid((x, y), positions):
-                positions.append((x, y))
-                break
-        else:
-            raise RuntimeError("Failed to generate valid initial positions.")
-    return np.array(positions).round(1)
-    
-
-
 class ChaseEnv(gym.Env):
     
-    def __init__(self, num_police=3, train_or_test='train'):
+    def __init__(self, args):
         super().__init__()
-        self.num_police = num_police
-        self.size = SIZE
+        self.num_police = args.num_police
+        self.case = args.case
+        self.construct_world()
+        self.size = self.size
         self.dt = 0.05
         # action: [dx, dy, turn_rate]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
@@ -90,27 +37,77 @@ class ChaseEnv(gym.Env):
         # observation: lidar (360 directions) + self pos + thief pos
         self.observation_space = spaces.Box(low=0, high=10, shape=(40,), dtype=np.float32)
 
-        self.obstacles = [Path(ob) for ob in OBSTACLES]
-        self.vis_obstacles = OBSTACLES
-        self.train_or_test = train_or_test
+        self.obstacles = [Path(ob) for ob in self.vis_obstacles]
+        self.train_or_test = args.train_or_test
+        
+    
+    def construct_world(self):
+        path = os.path.dirname(os.path.abspath(__file__))
+        coord_yaml_path = os.path.join(path, "config","coord.yaml")
+        with open(coord_yaml_path, "r") as stream:
+            try:
+                coords = yaml.safe_load(stream)
+            except yaml.YAMLError as exc:
+                print(exc)
+        self.vis_obstacles = coords[self.case]
+
+        world_yaml_path = os.path.join(path, "config", "world.yaml")
+        with open(world_yaml_path, "r") as stream:
+            try:
+                world = yaml.safe_load(stream)
+            except yaml.YAMLError as exc:
+                print(exc)
+        self.size = world['map']['size'][self.case]*2
+        self.boundary = [[[0,0], [0, self.size], [-0.2, self.size], [-0.2, 0]], 
+                                [[0, self.size], [self.size, self.size], [self.size, self.size+0.2], [0, self.size+0.2]],
+                                [[self.size, 0], [self.size+0.2, 0], [self.size+0.2, self.size], [self.size, self.size]],
+                                [[0, -0.2], [self.size, -0.2], [self.size, 0], [0, 0]]
+                         ]
+        
+    def generate_random_positions(self, robot_num):
+        def is_valid(pos, existing_positions, min_dist=0.5):
+            """检查位置是否在地图内、在障碍物外，并且离已有位置不太近"""
+            x, y = pos
+            if not (0 < x < self.size and 0 < y < self.size):
+                return False
+            point = np.array([x, y])
+            if any(poly.contains_point(point) for poly in self.obstacles):
+                return False
+            if any(np.linalg.norm(np.array(pos) - np.array(p)) < min_dist for p in existing_positions):
+                return False
+            return True
+        
+        import random
+        positions = []
+        max_trials = 1000
+        for _ in range(robot_num):
+            for _ in range(max_trials):
+                x = random.uniform(0.5, self.size - 0.5)
+                y = random.uniform(0.5, self.size - 0.5)
+                if is_valid((x, y), positions):
+                    positions.append((x, y))
+                    break
+            else:
+                raise RuntimeError("Failed to generate valid initial positions.")
+        return np.array(positions).round(1)
         
 
     def reset(self, seed=None, options=None):
         if self.train_or_test == 'test':
-            init_pos = InitPos.get_predefined_positions(case_number=CASE)
+            init_pos = InitPos.get_predefined_positions(case_number=self.case)
         if self.train_or_test == 'train':
-            init_pos = generate_random_positions(self.num_police + 1, self.obstacles)
+            init_pos = self.generate_random_positions(self.num_police + 1)
             
         self.police_agents = [PoliceAgent(init_pos[i], 
                                           id=i, 
                                           obstacles=self.obstacles,
-                                          boundary=Boundary)
+                                          boundary=self.boundary)
                               for i in range(self.num_police)]
         # initialization of evader
         # ===================================
         # self.thief = ThiefAgent(init_pos=init_pos[-1])
         self.thief = Evader(pos=init_pos[-1])
-        self.thief.get_env_info(CASE)
+        self.thief.get_env_info(self.case)
         self.thief.update_env(self.police_agents)
         # ====================================
         self.steps = 0
@@ -171,7 +168,7 @@ class ChaseEnv(gym.Env):
         from shapely.geometry import Polygon, Point
         agent_point = Point(agent.state)
         collided_with_boundary = False
-        for poly_pts in Boundary:  # self.boundaries 应设置为 Boundary
+        for poly_pts in self.boundary:  # self.boundaries 应设置为 Boundary
             boundary_poly = Polygon(poly_pts)
             if boundary_poly.contains(agent_point) or boundary_poly.exterior.distance(agent_point) <= agent.robot_radius:
                 collided_with_boundary = True

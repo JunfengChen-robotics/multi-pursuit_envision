@@ -25,12 +25,14 @@ def train(env, render=False):
     
     sac_agent = SACAgent(state_dim, action_dim)
     total_steps = 0
+    episode = 0
     while total_steps < MAX_STEPS:
         episode_rewards = {f"agent_{i}": 0.0 for i in range(env.num_police)}
         done = False
-        episode = 0
         episode_length = 0
         obs, _ = env.reset()
+        print("="*20)
+        print(f"Episode {episode} started.")
         while not done:
             if render:
                 env.render()
@@ -72,16 +74,16 @@ def train(env, render=False):
             done = done_dict["__all__"]
 
             if total_steps % 100 == 0:
-                print(f"Steps: {total_steps}, Episode Rewards: {episode_rewards}")
+                print(f"Steps: {total_steps}, Total Rewards: {episode_rewards}")
                 
         episode += 1
-        
+        print("="*20)
         avg_reward = np.mean(list(episode_rewards.values()))
         writer.add_scalar("Episode_Reward", avg_reward, episode)
         writer.add_scalar("Episode_Length", episode_length, episode)
         
         if total_steps % 1000 == 0:
-            print(f"Total steps: {total_steps}, Average Episode Reward: {avg_reward}")
+            print(f"Current Episode: {episode}, Average Episode Reward: {avg_reward}")
             model_path = os.path.join(save_dir, f"sac_checkpoint_{total_steps}.pth")
             sac_agent.save(model_path)
             print(f"[Checkpoint] Saved at step {total_steps}")
@@ -90,4 +92,4 @@ def train(env, render=False):
 
 if __name__ == "__main__":
     env = ChaseEnv(num_police=3, train_or_test=TRAIN_OR_TEST)
-    train(env, render=True)
+    train(env, render=False)

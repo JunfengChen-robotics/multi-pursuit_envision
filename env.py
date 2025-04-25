@@ -108,7 +108,7 @@ class ChaseEnv(gym.Env):
                               for i in range(self.num_police)]
         # initialization of evader
         # ===================================
-        # self.thief = ThiefAgent(init_pos=np.random.uniform(1, 7, size=2))
+        # self.thief = ThiefAgent(init_pos=init_pos[-1])
         self.thief = Evader(pos=init_pos[-1])
         self.thief.get_env_info(CASE)
         self.thief.update_env(self.police_agents)
@@ -139,6 +139,7 @@ class ChaseEnv(gym.Env):
         done = any(np.linalg.norm(p.state- self.thief.state) < p.capture_range for p in self.police_agents)
         done_dict = {f"agent_{i}": np.linalg.norm(p.state- self.thief.state) < p.capture_range for i, p in enumerate(self.police_agents)}
         done_dict["__all__"] = done
+
 
         return obs, reward, done_dict, {}, {}
     

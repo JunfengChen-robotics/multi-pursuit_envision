@@ -6,11 +6,6 @@ import os
 import argparse
 
 
-
-MAX_STEPS = 10000000
-TRAIN_OR_TEST = "train"  # "train" or "test"
-
-
 def train(env, render=False):
     
     # 设置TensorBoard日志目录
@@ -26,7 +21,7 @@ def train(env, render=False):
     sac_agent = SACAgent(state_dim, action_dim)
     total_steps = 0
     episode = 0
-    while total_steps < MAX_STEPS:
+    while total_steps < args.max_steps:
         episode_rewards = {f"agent_{i}": 0.0 for i in range(env.num_police)}
         done = False
         episode_length = 0

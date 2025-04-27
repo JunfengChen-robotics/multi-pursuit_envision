@@ -26,6 +26,9 @@ class ChaseEnv(gym.Env):
     
     def __init__(self, args):
         super().__init__()
+        
+        # —— 新增：分阶段＆难度控制参数 —— 
+        self.training_phase = args.training_phase    # 0:避障, 1:静态目标, 2:动态对抗
         self.num_police = args.num_police
         self.case = args.case
         self.construct_world()
@@ -34,12 +37,13 @@ class ChaseEnv(gym.Env):
         # action: [dx, dy, turn_rate]
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
+        # 修改观察空间定义
         # observation: lidar (360 directions) + self pos + thief pos
         self.observation_space = spaces.Box(low=0, high=10, shape=(40,), dtype=np.float32)
 
         self.obstacles = [Path(ob) for ob in self.vis_obstacles]
         self.train_or_test = args.train_or_test
-        
+    
     
     def construct_world(self):
         path = os.path.dirname(os.path.abspath(__file__))
@@ -91,58 +95,123 @@ class ChaseEnv(gym.Env):
                 raise RuntimeError("Failed to generate valid initial positions.")
         return np.array(positions).round(1)
         
-
+    
     def reset(self, seed=None, options=None):
+        # —— 定位模式 & 随机采样 —— 
         if self.train_or_test == 'test':
             init_pos = InitPos.get_predefined_positions(case_number=self.case)
         if self.train_or_test == 'train':
-            init_pos = self.generate_random_positions(self.num_police + 1)
-            
+            init_pos = self.generate_random_positions(self.num_police+1)      
+        
         self.police_agents = [PoliceAgent(init_pos[i], 
-                                          id=i, 
-                                          obstacles=self.obstacles,
-                                          boundary=self.boundary)
-                              for i in range(self.num_police)]
-        self.trajectories= np.empty((self.num_police+1, 2, 0))
-        # initialization of evader
-        # ===================================
-        # self.thief = ThiefAgent(init_pos=init_pos[-1])
-        self.thief = Evader(pos=init_pos[-1])
-        self.thief.get_env_info(self.case)
-        self.thief.update_env(self.police_agents)
-        # ====================================
+                        id=i, 
+                        obstacles=self.obstacles,
+                        boundary=self.boundary)
+            for i in range(self.num_police)]
+        
+        #  —— Phase0: 生成一个静态“目标点”给警察，No thief —— 
+        if self.training_phase == 0:
+            from random import uniform
+            # 在地图空白处随机选目标
+            while True:
+                gx, gy = uniform(0.5, self.size-0.5), uniform(0.5, self.size-0.5)
+                if not any(poly.contains_point((gx,gy)) for poly in self.obstacles):
+                    break
+            self.goal = np.array([gx, gy])
+        else:
+        
+            # Phase1 & Phase2: 按原逻辑初始化小偷
+            # initialization of evader
+            # ===================================
+            # self.thief = ThiefAgent(init_pos=init_pos[-1])
+            # ====================================
+
+            
+            self.thief = Evader(pos=init_pos[-1])
+            self.thief.get_env_info(self.case)
+            self.thief.update_env(self.police_agents)      
+
+        if self.train_or_test == "test":
+            self.trajectories= np.empty((self.num_police+1, 2, 0))
+        
         self.steps = 0
-        obs = {f"agent_{p.id}": p.get_obs(self.thief.state) for p in self.police_agents}
+        # obs = {f"agent_{p.id}": p.get_obs(self.thief.state) for p in self.police_agents}
+        obs = {}
+        for p in self.police_agents:
+            if self.training_phase == 0:
+                # lidar + 相对 goal 向量
+                obs[f"agent_{p.id}"] = np.hstack([
+                    p._lidar(p.state),
+                    self.goal - p.state,
+                    np.array([0.0, 0.0])  # dummy thief position
+                ])
+            else:
+                # 原： lidar + 相对小偷向量
+                obs[f"agent_{p.id}"] = p.get_obs(self.thief.state)
         return obs, {}
+
 
     def step(self, action_dict):
         self.steps += 1
-        current_positions = np.zeros((self.num_police+1, 2, 1))
+        if self.train_or_test == "test":
+            current_positions = np.zeros((self.num_police+1, 2, 1))
         for i in range(self.num_police):
             v = np.clip(action_dict[f"agent_{i}"][:2], -1, 1.0)
             self.police_agents[i].update(v, self.dt)
-            current_positions[i, :, 0] = self.police_agents[i].state
+            if self.train_or_test == "test":
+                current_positions[i, :, 0] = self.police_agents[i].state
 
-        # evader execution
+        # —— Phase0: 纯避障 + 静态目标追踪 —— 
+        if self.training_phase == 0:
+            obs, reward, done_dict = {}, {}, {}
+            for i, agent in enumerate(self.police_agents):
+                # 1. 观测
+                obs[f"agent_{i}"] = np.hstack([agent._lidar(agent.state), self.goal - agent.state, np.array([0.0, 0.0])])
+                # 2. reward：到 goal 的距离 & 撞墙惩罚
+                d = np.linalg.norm(agent.state - self.goal)
+                r = -0.1 * d
+                if d < agent.capture_range:     # 当作“到达”
+                    r += 10.0
+                # 撞墙
+                if np.any(agent._lidar(agent.state) <= agent.robot_radius+0.1):
+                    r -= 10.0
+                reward[f"agent_{i}"] = r
+                done_dict[f"agent_{i}"] = (d < agent.capture_range)
+            done_dict["__all__"] = any(done_dict.values())
+            return obs, reward, done_dict, {}, {}       
+        # —— Phase1 & Phase2: 原有动态对抗 —— 
+        # 更新小偷
         # ==============================
         # self.thief.update([agent.state for agent in self.police_agents])
-        self.thief.local_info_and_collision_check(self.police_agents) 
-        self.thief.update_env(self.police_agents)
-        self.thief.update_memory()
-        self.thief.select_goal()
-        self.thief.sel_stgy()
-        self.thief.move()
-        current_positions[-1, :, 0] = self.thief.state
-        self.trajectories = np.concatenate([self.trajectories, current_positions], axis=2)
-        # ==============================
-
-        obs = {f"agent_{i}": self.police_agents[i].get_obs(self.thief.state) for i in range(self.num_police)}
-        reward = {f"agent_{i}": self.compute_reward(i) for i in range(self.num_police)}
-        done = any(np.linalg.norm(p.state- self.thief.state) < p.capture_range and self.is_in_sight(p.state.tolist(), self.thief.state.tolist(), self.vis_obstacles,  p.capture_range) for p in self.police_agents)
-        done_dict = {f"agent_{i}": np.linalg.norm(p.state- self.thief.state) < p.capture_range for i, p in enumerate(self.police_agents)}
-        done_dict["__all__"] = done
-
+        if self.training_phase == 1:
+            pass
+        elif self.training_phase == 2:
+            self.thief.local_info_and_collision_check(self.police_agents)
+            self.thief.update_env(self.police_agents)
+            self.thief.update_memory()
+            self.thief.select_goal()
+            self.thief.sel_stgy()
+            self.thief.move()
+        if self.train_or_test == "test":
+            current_positions[-1, :, 0] = self.thief.state
+            self.trajectories = np.concatenate([self.trajectories, current_positions], axis=2)
+        # assemble obs & reward & done（沿用原 compute_reward）
+        obs = {f"agent_{i}": self.police_agents[i].get_obs(self.thief.state)
+               for i in range(self.num_police)}
+        reward = {f"agent_{i}": self.compute_reward(i)
+                  for i in range(self.num_police)}
+        caught = any(
+            np.linalg.norm(p.state - self.thief.state) < p.capture_range
+            and self.is_in_sight(p.state, self.thief.state, self.vis_obstacles, p.capture_range)
+            for p in self.police_agents
+        )
+        done_dict = {f"agent_{i}": 
+                         np.linalg.norm(self.police_agents[i].state - self.thief.state) < self.police_agents[i].capture_range \
+                         and self.is_in_sight(self.police_agents[i].state, self.thief.state, self.vis_obstacles, self.police_agents[i].capture_range)
+                     for i in range(self.num_police)}
+        done_dict["__all__"] = caught
         return obs, reward, done_dict, {}, {}
+
     
     
     def is_in_sight(self, pos1, pos2, obs_info_local_,scout_range):
@@ -177,8 +246,6 @@ class ChaseEnv(gym.Env):
                 return False
 
         return True
-    
-    
     
     
     def compute_reward(self, idx):
@@ -258,9 +325,13 @@ class ChaseEnv(gym.Env):
                     self.ax.plot(end_point[0], end_point[1], 'yo', markersize=6, zorder=5)
 
         # 画小偷（红色三角形）
-        t_x, t_y = self.thief.state[0], self.thief.state[1]
-        self.ax.scatter(t_x, t_y, marker='^', color=COLOR[-1], s=200, edgecolor=COLOR[-1], linewidth=2)
-        self.ax.plot(self.thief.modified_goal_pos[0], self.thief.modified_goal_pos[1], marker='s', color='red', markersize=6, fillstyle='none', alpha=0.3)
+        if self.training_phase == 0:
+            t_x, t_y = self.goal[0], self.goal[1]
+            self.ax.scatter(t_x, t_y, marker='^', color='red', s=200, edgecolor='red', linewidth=2)
+        else:
+            t_x, t_y = self.thief.state[0], self.thief.state[1]
+            self.ax.scatter(t_x, t_y, marker='^', color=COLOR[-1], s=200, edgecolor=COLOR[-1], linewidth=2)
+            self.ax.plot(self.thief.modified_goal_pos[0], self.thief.modified_goal_pos[1], marker='s', color='red', markersize=6, fillstyle='none', alpha=0.3)
         if self.train_or_test == "test":
             self.ax.plot(self.trajectories[-1, 0, :], self.trajectories[-1, 1, :], color=COLOR[-1], linewidth=5.0, linestyle='-')
 

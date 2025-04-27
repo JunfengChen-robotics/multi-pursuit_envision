@@ -6,7 +6,7 @@ import os
 import argparse
 
 
-def train(env, render=False):
+def train(env, render=False, resume=False, init_ckpt=None):
     
     # 设置TensorBoard日志目录
     log_dir = "logs/"+args.case
@@ -17,8 +17,11 @@ def train(env, render=False):
     
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    
     sac_agent = SACAgent(state_dim, action_dim)
+    if resume and init_ckpt is not None:
+        print(f"→ Loading weights from {init_ckpt}")
+        sac_agent.load(init_ckpt)
+        
     total_steps = 0
     episode = 0
     while total_steps < args.max_steps:
@@ -28,7 +31,7 @@ def train(env, render=False):
         obs, _ = env.reset()
         print("="*20)
         print(f"Episode {episode} started.")
-        while not done:
+        while not done and total_steps < args.max_steps:
             if render:
                 env.render()
             action_dict = {}
@@ -77,12 +80,15 @@ def train(env, render=False):
         writer.add_scalar("Episode_Reward", avg_reward, episode)
         writer.add_scalar("Episode_Length", episode_length, episode)
         
-        if total_steps % 1000 == 0:
+        if total_steps % 10 == 0:
             print(f"Current Episode: {episode}, Average Episode Reward: {avg_reward}")
-            model_path = os.path.join(save_dir, f"sac_checkpoint_{total_steps}.pth")
+            model_path = os.path.join(save_dir, f"sac_phase{args.training_phase}_{total_steps}.pth")
+
             sac_agent.save(model_path)
             print(f"[Checkpoint] Saved at step {total_steps}")
-
+    
+    # 返回最后一个 checkpoint 路径，供下个阶段 warm-start
+    return model_path
     
 
 if __name__ == "__main__":
@@ -92,7 +98,30 @@ if __name__ == "__main__":
     argparser.add_argument("--train_or_test", type=str, default="train", choices=["train", "test"], help="Train or test mode.")
     argparser.add_argument("--render", action="store_true", help="Render the environment.")
     argparser.add_argument("--case", type=str, default="case5", choices=["case5", "case6", "case10"], help="Case number for predefined positions.")
-    argparser.add_argument("--max_steps", type=int, default=10000000, help="Maximum number of steps.")
+    # argparser.add_argument("--max_steps", type=int, default=100000000, help="Maximum number of steps.")
+    # —— 新增分阶段步数控制 —— 
+    argparser.add_argument("--phase0_steps", type=int, default=10, help="Phase0 (避障) 步数")
+    argparser.add_argument("--phase1_steps", type=int, default=30, help="Phase1 (静态目标) 步数")
+    argparser.add_argument("--phase2_steps", type=int, default=20, help="Phase2 (动态对抗) 步数")
+    # 由 Curricumulum Loop 赋值，不需要用户直接设置
+    argparser.add_argument("--training_phase", type=int, default=0, help="Curriculum training phase")
     args = argparser.parse_args()
-    env = ChaseEnv(args)
-    train(env, render=args.render)
+    # —— 三阶段循环训练 —— 
+    phases = [
+        (0, args.phase0_steps),
+        (1, args.phase1_steps),
+        (2, args.phase2_steps),
+    ]
+    prev_ckpt = None
+    for phase, steps in phases:
+        print(f"\n===== Starting Phase {phase} ({['避障','静态目标','动态对抗'][phase]}) =====")
+        args.training_phase = phase
+        args.max_steps = steps
+        env = ChaseEnv(args)
+        # 第一阶段无需载入模型，后面阶段都从上一次 checkpoint warm-start
+        ckpt = train(env,
+                     render=args.render,
+                     resume=(prev_ckpt is not None),
+                     init_ckpt=prev_ckpt)
+        prev_ckpt = ckpt
+    print("=== Curriculum Training Completed ===")

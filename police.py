@@ -20,12 +20,12 @@ class PoliceAgent:
        self.state += self.velocity * dt
        self.state = np.clip(self.state, 0, 8)
 
-    def get_obs(self, thief_pos):
+    def get_obs(self, thief_pos, obstacle_image):
         pos =self.state
         rel_thief = thief_pos - pos
         lidar_scan = self._lidar(pos)
         
-        return np.concatenate([lidar_scan,self.state, rel_thief])
+        return np.concatenate([rel_thief, lidar_scan, obstacle_image.flatten()])
     
     def _lidar(self, pos):
         readings = []

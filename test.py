@@ -9,8 +9,9 @@ import glob
 MAX_TEST_EPISODES = 1  # 测试多少个episode
 
 def find_latest_checkpoint(case):
-    checkpoint_dir = os.path.join("checkpoints", case)
-    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "sac_checkpoint_*.pth"))
+    base_path = os.path.dirname(os.path.realpath(__file__))
+    checkpoint_dir = os.path.join(base_path, "checkpoints", case)
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "*.pth"))
     if not checkpoint_files:
         raise FileNotFoundError(f"No checkpoint files found in {checkpoint_dir}")
     
@@ -22,7 +23,7 @@ def find_latest_checkpoint(case):
 def test(env, model_path, render=False):
     log_dir = "logs_test/" + args.case
     os.makedirs(log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir)
+    # writer = SummaryWriter(log_dir=log_dir)
 
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -63,8 +64,8 @@ def test(env, model_path, render=False):
         
         avg_reward = np.mean(list(episode_rewards.values()))
         total_rewards.append(avg_reward)
-        writer.add_scalar("Test_Episode_Reward", avg_reward, episode)
-        writer.add_scalar("Test_Episode_Length", episode_length, episode)
+        # writer.add_scalar("Test_Episode_Reward", avg_reward, episode)
+        # writer.add_scalar("Test_Episode_Length", episode_length, episode)
 
         print(f"Test Episode {episode} finished. Average Reward: {avg_reward}. Average Length: {episode_length}")
         print("="*20)
@@ -72,7 +73,7 @@ def test(env, model_path, render=False):
     overall_avg_reward = np.mean(total_rewards)
     print(f"Testing finished over {MAX_TEST_EPISODES} episodes. Overall Average Reward: {overall_avg_reward}")
 
-    writer.close()
+    # writer.close()
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="Test the SAC agent in the Chase environment.")
@@ -80,7 +81,12 @@ if __name__ == "__main__":
     argparser.add_argument("--render", action="store_true", help="Render the environment during testing.")
     argparser.add_argument("--case", type=str, default="case5", choices=["case5", "case6", "case10"], help="Case number for predefined positions.")
     argparser.add_argument("--model_path", type=str, default=None, help="Optional: manually specify model path.")
-    argparser.add_argument("--train_or_test", type=str, default="train", choices=["train", "test"], help="Train or test mode.")
+    argparser.add_argument("--train_or_test", type=str, default="test", choices=["train", "test"], help="Train or test mode.")
+    argparser.add_argument("--phase0_steps", type=int, default=1000000, help="Phase0 (避障) 步数")
+    argparser.add_argument("--phase1_steps", type=int, default=5000000, help="Phase1 (静态目标) 步数")
+    argparser.add_argument("--phase2_steps", type=int, default=10000000, help="Phase2 (动态对抗) 步数")
+    # 由 Curricumulum Loop 赋值，不需要用户直接设置
+    argparser.add_argument("--training_phase", type=int, default=2, help="Curriculum training phase")
     args = argparser.parse_args()
 
     env = ChaseEnv(args)

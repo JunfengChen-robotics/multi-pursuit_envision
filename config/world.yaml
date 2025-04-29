@@ -23,6 +23,11 @@ map:
           case9: 0.1
           case10: 0.1
 
+        rect:
+          case5: 80
+          case6: 100
+          case10: 100
+
         timestep: 0.05
 
 

@@ -5,6 +5,8 @@ import numpy as np
 import random
 from collections import deque
 import gymnasium as gym
+from encoder import MultiModalNetwork
+
 
 # 超参数设置
 ALPHA = 0.2  # 探索和利用之间的权衡系数
@@ -81,62 +83,73 @@ class PolicyNetwork(nn.Module):
         return action, log_prob
     
 class SACAgent:
-    def __init__(self, state_dim, action_dim, alpha=0.2, gamma=0.99, tau=0.005,
-                 buffer_size=1000000, batch_size=256, automatic_entropy_tuning=False):
-
+    def __init__(self, state_dim, action_dim, case=None, alpha=0.2, gamma=0.99, tau=0.005,
+                 buffer_size=1000000, batch_size=1, automatic_entropy_tuning=False):
         self.gamma = gamma
         self.tau = tau
         self.alpha = alpha
         self.batch_size = batch_size
         self.automatic_entropy_tuning = automatic_entropy_tuning
 
+        # 使用多模态网络
+        self.get_picture_param(case)
+        self.multi_modal_net = MultiModalNetwork(state_dim, action_dim, image_height=self.image_height, image_width=self.image_width).to(device)
+
+        # 分开Q网络和策略网络
         self.q_net = QNetwork(state_dim, action_dim).to(device)
-        self.target_q_net = QNetwork(state_dim, action_dim).to(device)
         self.policy_net = PolicyNetwork(state_dim, action_dim).to(device)
-
-        self.target_q_net.load_state_dict(self.q_net.state_dict())
-
+        self.target_q_net = QNetwork(state_dim, action_dim).to(device)
+        
         self.q_optimizer = torch.optim.Adam(self.q_net.parameters(), lr=LEARNING_RATE)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
 
-        # 自动调节 alpha（可选）
+        # 自适应alpha
         if self.automatic_entropy_tuning:
-            self.target_entropy = -action_dim  # 推荐设为 -|A|
+            self.target_entropy = -action_dim
             self.log_alpha = torch.tensor(np.log(alpha), requires_grad=True, device=device)
             self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=LEARNING_RATE)
 
         self.replay_buffer = ReplayBuffer(capacity=buffer_size)
 
+
     def get_action(self, state, evaluate=False):
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
         with torch.no_grad():
             if evaluate:
-                mean, _ = self.policy_net(state_tensor)
+                mean, _ = self.multi_modal_net.policy_network(state_tensor)
                 action = torch.tanh(mean)
             else:
-                action, _ = self.policy_net.sample(state_tensor)
+                action, _ = self.multi_modal_net.sample(state_tensor)
         return action.squeeze(0).cpu().numpy()
 
     def store_transition(self, state, action, reward, next_state, done):
         self.replay_buffer.push(state, action, reward, next_state, done)
-        
+
+
+    # 更新Q网络和策略网络
     def update(self):
         if len(self.replay_buffer) < self.batch_size:
             return None, None
 
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
 
+        # Process states, actions, rewards
         states = states.to(device)
         actions = actions.to(device)
-        rewards = rewards.to(device)  # [B, 1]
-        dones = dones.to(device)      # [B, 1]
+        rewards = rewards.to(device)
+        dones = dones.to(device)
         next_states = next_states.to(device)
 
-        with torch.no_grad():
-            next_actions, next_log_prob = self.policy_net.sample(next_states)
-            next_q1, next_q2 = self.target_q_net(next_states, next_actions)
-            next_q = torch.min(next_q1, next_q2)
-            q_target = rewards + self.gamma * (1 - dones) * (next_q - self.alpha * next_log_prob)
+        q_loss, policy_loss, alpha_loss = self._update_q_policy(states, actions, rewards, next_states, dones)
+
+        return q_loss, policy_loss, alpha_loss
+
+    def _update_q_policy(self, states, actions, rewards, next_states, dones):
+        next_actions, next_log_prob = self.policy_net.sample(next_states)
+        
+        next_q1, next_q2 = self.target_q_net(next_states, next_actions)  # 目标Q网络
+        next_q = torch.min(next_q1, next_q2)  # 选择最小的Q值作为目标值
+        q_target = rewards + self.gamma * (1 - dones) * (next_q - self.alpha * next_log_prob)
 
         q1_pred, q2_pred = self.q_net(states, actions)
         q_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
@@ -154,30 +167,50 @@ class SACAgent:
         policy_loss.backward()
         self.policy_optimizer.step()
 
-        # soft update
-        for target_param, param in zip(self.target_q_net.parameters(), self.q_net.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        # 更新目标Q网络
+        with torch.no_grad():
+            for target_param, param in zip(self.target_q_net.q1.parameters(), self.q_net.q1.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+            for target_param, param in zip(self.target_q_net.q2.parameters(), self.q_net.q2.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                
+        return q_loss.item(), policy_loss.item(), None
 
-        return q_loss.item(), policy_loss.item()
+
 
     def save(self, path):
         torch.save({
-            'q_net': self.q_net.state_dict(),
-            'target_q_net': self.target_q_net.state_dict(),
-            'policy_net': self.policy_net.state_dict(),
+            'multi_modal_net': self.multi_modal_net.state_dict(),  # 保存多模态网络的参数
             'q_optimizer': self.q_optimizer.state_dict(),
             'policy_optimizer': self.policy_optimizer.state_dict(),
-            'alpha': self.alpha,
+            'alpha': self.alpha,  # 自动调节alpha时的值
         }, path)
+
+
 
     def load(self, path):
         checkpoint = torch.load(path)
-        self.q_net.load_state_dict(checkpoint['q_net'])
-        self.target_q_net.load_state_dict(checkpoint['target_q_net'])
-        self.policy_net.load_state_dict(checkpoint['policy_net'])
+        # 加载多模态网络的权重
+        self.multi_modal_net.load_state_dict(checkpoint['multi_modal_net'])
+        # 加载优化器的状态
         self.q_optimizer.load_state_dict(checkpoint['q_optimizer'])
         self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer'])
+        # 可选：自动调整 alpha
         self.alpha = checkpoint.get('alpha', self.alpha)
+        
+        
+    def get_picture_param(self, case):
+        import os, yaml
+        path = os.path.dirname(os.path.abspath(__file__))
+        world_yaml_path = os.path.join(path, "config", "world.yaml")
+        with open(world_yaml_path, "r") as stream:
+            try:
+                world = yaml.safe_load(stream)
+            except yaml.YAMLError as exc:
+                print(exc)
+        self.image_height = world['map']["rect"][case]
+        self.image_width = world['map']["rect"][case]
+
 
 
 from collections import deque

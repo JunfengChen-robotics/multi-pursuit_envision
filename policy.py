@@ -6,6 +6,7 @@ import random
 from collections import deque
 import gymnasium as gym
 from encoder import MultiModalNetwork
+from PER import PrioritizedReplayBuffer
 
 
 # 超参数设置
@@ -100,6 +101,9 @@ class SACAgent:
         self.policy_net = PolicyNetwork(state_dim, action_dim).to(device)
         self.target_q_net = QNetwork(state_dim, action_dim).to(device)
         
+        self.target_policy_net = PolicyNetwork(state_dim, action_dim).to(device)
+        self.target_policy_net.load_state_dict(self.policy_net.state_dict())
+        
         self.q_optimizer = torch.optim.Adam(self.q_net.parameters(), lr=LEARNING_RATE)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
         
@@ -110,7 +114,11 @@ class SACAgent:
             self.alpha = self.log_alpha.exp().item()
             self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=LEARNING_RATE)
 
-        self.replay_buffer = ReplayBuffer(capacity=buffer_size)
+        self.replay_buffer  = PrioritizedReplayBuffer(capacity=buffer_size)
+        
+        
+        self.policy_delay = 2  # 每2步更新一次policy
+        self.update_count = 0
 
 
     def get_action(self, state, evaluate=False):
@@ -133,7 +141,7 @@ class SACAgent:
         if len(self.replay_buffer) < self.batch_size:
             return None, None, None
 
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
+        states, actions, rewards, next_states, dones, weights, indices = self.replay_buffer.sample(self.batch_size)
 
         # Process states, actions, rewards
         states = states.to(device)
@@ -142,41 +150,76 @@ class SACAgent:
         dones = dones.to(device)
         next_states = next_states.to(device)
 
-        q_loss, policy_loss, alpha_loss = self._update_q_policy(states, actions, rewards, next_states, dones)
-
-        return q_loss, policy_loss, alpha_loss
-
-    def _update_q_policy(self, states, actions, rewards, next_states, dones):
-        next_actions, next_log_prob = self.policy_net.sample(next_states)
+        q_loss= self._update_q_policy(states, actions, rewards, next_states, dones, weights,indices)
         
-        next_q1, next_q2 = self.target_q_net(next_states, next_actions)  # 目标Q网络
-        next_q = torch.min(next_q1, next_q2)  # 选择最小的Q值作为目标值
-        q_target = rewards + self.gamma * (1 - dones) * (next_q - self.alpha * next_log_prob)
-
-        q1_pred, q2_pred = self.q_net(states, actions)
-        q_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
-
-        self.q_optimizer.zero_grad()
-        q_loss.backward(retain_graph=True)
-        self.q_optimizer.step()
-
+        self.update_count += 1
+        policy_loss, alpha_loss = None, None
+        if self.update_count % self.policy_delay == 0:
+            policy_loss, alpha_loss = self._update_policy(states)
+        
+        return q_loss if q_loss else None, \
+            policy_loss if policy_loss else None, \
+            alpha_loss if alpha_loss else None
+          
+            
+    def _update_policy(self, states):
         new_actions, log_prob = self.policy_net.sample(states)
-        q1_new, q2_new = self.q_net(states, new_actions)
-        q_new = torch.min(q1_new, q2_new)
-        policy_loss = (self.alpha * log_prob - q_new).mean()
+        q1, q2 = self.q_net(states, new_actions)
+        q_val = torch.min(q1, q2)
+        policy_loss = (self.alpha * log_prob - q_val).mean()
 
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
         self.policy_optimizer.step()
-        
-        # --- Alpha loss (自动调节) ---
+
         alpha_loss = None
         if self.automatic_entropy_tuning:
             alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
-            self.alpha = self.log_alpha.exp()  # 更新 alpha 实值
+            self.alpha = self.log_alpha.exp()
+
+        return policy_loss.item(), alpha_loss.item()
+
+
+    def _update_q_policy(self, states, actions, rewards, next_states, dones, weights, indices):
+        next_actions, next_log_prob = self.target_policy_net.sample(next_states)
+        
+        next_q1, next_q2 = self.target_q_net(next_states, next_actions)  # 目标Q网络
+        next_q = torch.min(next_q1, next_q2)  # 选择最小的Q值作为目标值
+        q_target = rewards + self.gamma * (1 - dones) * (next_q - self.alpha * next_log_prob)
+
+        q1_pred, q2_pred = self.q_net(states, actions)
+        td_error1 = q1_pred - q_target
+        td_error2 = q2_pred - q_target
+        q_loss = (weights * td_error1.pow(2)).mean() + (weights * td_error2.pow(2)).mean()
+        
+        # 修正：避免 td_errors 是标量
+        td_errors = ((td_error1 + td_error2) / 2).detach().cpu().numpy().flatten()
+        self.replay_buffer.update_priorities(indices, td_errors)
+
+        self.q_optimizer.zero_grad()
+        q_loss.backward(retain_graph=True)
+        self.q_optimizer.step()
+
+        # new_actions, log_prob = self.policy_net.sample(states)
+        # q1_new, q2_new = self.q_net(states, new_actions)
+        # q_new = torch.min(q1_new, q2_new)
+        # policy_loss = (self.alpha * log_prob - q_new).mean()
+
+        # self.policy_optimizer.zero_grad()
+        # policy_loss.backward()
+        # self.policy_optimizer.step()
+        
+        # --- Alpha loss (自动调节) ---
+        # alpha_loss = None
+        # if self.automatic_entropy_tuning:
+        #     alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
+        #     self.alpha_optimizer.zero_grad()
+        #     alpha_loss.backward()
+        #     self.alpha_optimizer.step()
+        #     self.alpha = self.log_alpha.exp()  # 更新 alpha 实值
 
         # 更新目标Q网络
         with torch.no_grad():
@@ -185,7 +228,11 @@ class SACAgent:
             for target_param, param in zip(self.target_q_net.q2.parameters(), self.q_net.q2.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
                 
-        return q_loss.item(), policy_loss.item(), alpha_loss.item() if alpha_loss is not None else None
+        with torch.no_grad():
+            for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+
+        return q_loss.item()
 
 
 

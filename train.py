@@ -65,10 +65,7 @@ def train(env, render=False, resume=False, init_ckpt=None):
             # 为每个警察代理选择动作
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                if total_steps < 10000:
-                    action = env.action_space.sample()  # 随机动作
-                else:
-                    action = sac_agent.get_action(agent_state)
+                action = env.action_space.sample()
                 action_dict[f"agent_{i}"] = action
 
             # 执行动作并获得新的观察和奖励
@@ -91,6 +88,7 @@ def train(env, render=False, resume=False, init_ckpt=None):
             
             if q_loss is not None :
                 writer.add_scalar("Q_Loss", q_loss, total_steps)
+            if policy_loss is not None:
                 writer.add_scalar("Policy_Loss", policy_loss, total_steps)
             if alpha_loss is not None:
                 writer.add_scalar("Alpha_Loss", alpha_loss, total_steps)

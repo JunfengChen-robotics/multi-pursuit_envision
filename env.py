@@ -34,8 +34,9 @@ class ChaseEnv(gym.Env):
         self.construct_world()
         self.size = self.size
         self.dt = 0.05
+        self.max_velocity = 1.2
         # action: [dx, dy, turn_rate]
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-self.max_velocity, high=self.max_velocity, shape=(2,), dtype=np.float32)
 
         # 修改观察空间定义
         # observation: lidar (360 directions) + self pos + thief pos

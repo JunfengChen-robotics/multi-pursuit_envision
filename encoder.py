@@ -18,7 +18,7 @@ class MultiModalNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
-
+    
         # CNN for image data
         self.conv1 = nn.Conv2d(image_channels, 32, kernel_size=3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)

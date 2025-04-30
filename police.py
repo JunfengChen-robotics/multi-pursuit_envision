@@ -9,11 +9,12 @@ class PoliceAgent:
         self.robot_radius = 0.1
         self.obstacles = obstacles
         self.lidar_range = 3
-        self.max_velocity = 1.0
+        self.max_velocity = 1.2
         self.capture_range = 0.8
         self.robot_distance = 0.1
         self.liard_readings = 36
         self.boundary = [Path(ob) for ob in boundary]
+        self.init_state = self.state
 
     def update(self, action, dt):
        self.velocity = np.clip(action[:2], -self.max_velocity, self.max_velocity)

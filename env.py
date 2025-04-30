@@ -173,13 +173,15 @@ class ChaseEnv(gym.Env):
         for i in range(self.num_police):
             v = np.clip(action_dict[f"agent_{i}"][:2], -1, 1.0)
             # 计算目标位置
+            start_position = self.police_agents[i].state
             target_position = self.police_agents[i].state + v * self.dt
-            if self.is_valid_position(target_position):
+            if self.is_valid_transition(start_position, target_position):
                 # 如果目标位置有效，则更新警察位置
                 self.police_agents[i].update(v, self.dt)
             else:
                 # 如果目标位置无效，则警察位置不更新
-                print(f"警察{i}的目标位置无效，保持原位置")
+                pass
+                # print(f"警察{i}的目标位置无效，保持原位置")
             current_positions[i, :, 0] = self.police_agents[i].state
         
         obs, reward, done_dict = {}, {}, {}
@@ -217,22 +219,37 @@ class ChaseEnv(gym.Env):
                          self.police_to_thief_dict[i] < self.police_agents[i].capture_range \
                          and self.is_in_sight(self.police_agents[i].state, self.thief.state, self.vis_obstacles, self.police_agents[i].capture_range)
                      for i in range(self.num_police)}
+        
+        for i in range(self.num_police):
+            dist = self.police_to_thief_dict[i]
+            in_sight = self.is_in_sight(self.police_agents[i].state, self.thief.state, self.vis_obstacles, self.police_agents[i].capture_range)
+            print(f"step = {self.steps}, agent {i} to thief distance = {dist:.2f}, in sight = {in_sight}")
+            
         done_dict["__all__"] = any(done_dict.values())
         return obs, reward, done_dict, {}, {}
     
     
     def compute_reward_from_phase0(self, idx):
         agent = self.police_agents[idx]
-        r = 0.0
+        reward = 0.0
         # reward：到 goal 的距离 & 撞墙惩罚
-        d = self.compute_a_star_path(agent.state, self.thief.state)
-        self.police_to_thief_dict[idx] = d
-        r = -0.1 * d
-        if d < agent.capture_range:     # 当作“到达”
-            r += 100.0
+        dist_to_thief = self.compute_a_star_path(agent.state, self.thief.state)
+        # --- 2. 引导奖励（仅前期启用）---
+        if self.steps < 5000:
+            # 鼓励探索远处（与初始位置保持一定距离）
+            init_pos = agent.init_state
+            dist_from_start = np.linalg.norm(agent.state - init_pos)
+            reward += 0.05 * dist_from_start  # 奖励走得远
+            # 额外奖励靠近小偷的行为（高权重）
+            reward += 0.2 * (1.0 / (dist_to_thief + 1e-6))
+        
+        self.police_to_thief_dict[idx] = dist_to_thief
+        reward = -0.1 * dist_to_thief
+        if dist_to_thief < agent.capture_range:     # 当作“到达”
+            reward += 100.0
         # 撞墙
         if np.any(agent._lidar(agent.state) <= agent.robot_radius+0.02):
-            r -= 10.0
+            reward -= 10.0
         # 撞到边界
         from shapely.geometry import Polygon, Point
         agent_point = Point(agent.state)
@@ -243,8 +260,8 @@ class ChaseEnv(gym.Env):
                 collided_with_boundary = True
                 break
         if collided_with_boundary:
-            r -= 10.0
-        return r
+            reward -= 10.0
+        return reward
     
        
     def compute_reward_from_phase1(self, idx):
@@ -254,6 +271,16 @@ class ChaseEnv(gym.Env):
         # 1. 与小偷距离
         dist_to_thief = self.compute_a_star_path(agent.state, self.thief.state)
         reward += -0.1 * dist_to_thief
+        
+        # --- 2. 引导奖励（仅前期启用）---
+        if self.steps < 5000:
+            # 鼓励探索远处（与初始位置保持一定距离）
+            init_pos = agent.init_state
+            dist_from_start = np.linalg.norm(agent.state - init_pos)
+            reward += 0.05 * dist_from_start  # 奖励走得远
+
+            # 额外奖励靠近小偷的行为（高权重）
+            reward += 0.2 * (1.0 / (dist_to_thief + 1e-6))
         
         # 2. 逃脱惩罚：如果警察离小偷越来越远，则给予惩罚
         previous_dist = self.police_to_thief_dict[idx]
@@ -330,37 +357,47 @@ class ChaseEnv(gym.Env):
     
 
     def compute_a_star_path(self, start, goal):
-        """ 使用 networkx 计算A*路径，考虑障碍物，障碍物由角点坐标表示 """
+        """ 使用 networkx 计算A*路径，返回真实欧式距离（非步数） """
         import networkx as nx 
         import shapely.geometry as shageo
+        import numpy as np
+
         # 创建网格图
-        grid_size = int(self.size / self.discrete_size)  # 基于离散化参数计算网格大小
-        G = nx.grid_2d_graph(grid_size, grid_size)  # 创建一个2D网格图
-        
+        grid_size = int(self.size / self.discrete_size)
+        G = nx.grid_2d_graph(grid_size, grid_size)
+
         # 将障碍物转换为shapely的多边形
         obstacle_polygons = [shageo.Polygon(obstacle) for obstacle in self.vis_obstacles]
-        
-        # 判断障碍物位置并将其对应的网格节点标记为不可通行
+
+        # 删除与障碍物重叠的节点
         for obstacle in obstacle_polygons:
             for (x, y) in list(G.nodes):
-                point = (x * self.discrete_size + self.discrete_size / 2, y * self.discrete_size + self.discrete_size / 2)  # 网格点的中心
+                point = (x * self.discrete_size + self.discrete_size / 2, y * self.discrete_size + self.discrete_size / 2)
                 if obstacle.contains(shageo.Point(point)):
-                    G.remove_node((x, y))  # 删除被障碍物遮挡的节点
-        
-        # 转换起点和终点为网格坐标
+                    G.remove_node((x, y))
+
+        # 起点终点网格坐标
         start_grid = (int(start[0] / self.discrete_size), int(start[1] / self.discrete_size))
         goal_grid = (int(goal[0] / self.discrete_size), int(goal[1] / self.discrete_size))
-        
-        # 如果起点或终点被障碍物挡住，则无法到达，返回无穷大
+
         if start_grid not in G or goal_grid not in G:
             return float('inf')
-        
-        # 使用A*算法计算最短路径
+
+        # A*搜索
         try:
             path = nx.astar_path(G, start_grid, goal_grid, heuristic=euclidean_heuristic)
-            return len(path)  # 返回路径的长度
+
+            # 计算路径欧式长度（乘以 discrete_size 恢复物理单位）
+            total_length = 0.0
+            for i in range(len(path) - 1):
+                p1 = np.array(path[i])
+                p2 = np.array(path[i + 1])
+                total_length += np.linalg.norm((p1 - p2) * self.discrete_size)
+
+            return total_length
+
         except nx.NetworkXNoPath:
-            return float('inf')  # 如果没有路径，返回无穷大
+            return float('inf')
     
     
     def is_in_sight(self, pos1, pos2, obs_info_local_,scout_range):
@@ -459,24 +496,26 @@ class ChaseEnv(gym.Env):
         plt.pause(0.01)
     
     
-    def is_valid_position(self, position):
+    
+
+    def is_valid_transition(self, start_pos, end_pos):
         """
-        检查给定位置是否有效，确保不与障碍物发生碰撞
-        :param position: 目标位置 (x, y)
-        :param agent: 当前警察代理对象
-        :return: 如果位置有效（不在障碍物内），返回 True，否则返回 False
+        判断从 start_pos 移动到 end_pos 是否会穿过障碍物。
         """
         import shapely
-        
-        point = shapely.geometry.Point(position)
-        
-        # 检查目标位置是否与任何障碍物相交
-        for poly in self.vis_obstacles:
-            obstacle_poly = shapely.geometry.Polygon(poly)
-            if obstacle_poly.contains(point) or obstacle_poly.exterior.distance(point) <= 0.01:
-                return False  # 目标位置与障碍物相交，位置无效
-        
+        movement_line = shapely.geometry.LineString([start_pos, end_pos])
+        point = shapely.geometry.Point(end_pos)
+
+        for obs_pts in self.vis_obstacles:
+            poly = shapely.geometry.Polygon(obs_pts)
+            # 检查终点是否落在障碍物内
+            if poly.contains(point) or poly.exterior.distance(point) <= 0.05:
+                return False
+            # 检查移动路径是否与障碍物相交（即“穿墙”）
+            if movement_line.intersects(poly):
+                return False
         return True
+
         
 
 def euclidean_heuristic(a, b):

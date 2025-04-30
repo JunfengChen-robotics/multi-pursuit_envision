@@ -83,8 +83,8 @@ class PolicyNetwork(nn.Module):
         return action, log_prob
     
 class SACAgent:
-    def __init__(self, state_dim, action_dim, case=None, alpha=0.2, gamma=0.99, tau=0.005,
-                 buffer_size=1000000, batch_size=1, automatic_entropy_tuning=False):
+    def __init__(self, state_dim, action_dim, case=None, alpha=1.0, gamma=0.99, tau=0.005,
+                 buffer_size=1000000, batch_size=256, automatic_entropy_tuning=True):
         self.gamma = gamma
         self.tau = tau
         self.alpha = alpha
@@ -102,11 +102,12 @@ class SACAgent:
         
         self.q_optimizer = torch.optim.Adam(self.q_net.parameters(), lr=LEARNING_RATE)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=LEARNING_RATE)
-
+        
         # 自适应alpha
         if self.automatic_entropy_tuning:
-            self.target_entropy = -action_dim
+            self.target_entropy = -action_dim * 2.0
             self.log_alpha = torch.tensor(np.log(alpha), requires_grad=True, device=device)
+            self.alpha = self.log_alpha.exp().item()
             self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=LEARNING_RATE)
 
         self.replay_buffer = ReplayBuffer(capacity=buffer_size)
@@ -120,6 +121,7 @@ class SACAgent:
                 action = torch.tanh(mean)
             else:
                 action, _ = self.multi_modal_net.sample(state_tensor)
+                action += 0.1 * torch.randn_like(action) 
         return action.squeeze(0).cpu().numpy()
 
     def store_transition(self, state, action, reward, next_state, done):
@@ -129,7 +131,7 @@ class SACAgent:
     # 更新Q网络和策略网络
     def update(self):
         if len(self.replay_buffer) < self.batch_size:
-            return None, None
+            return None, None, None
 
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
 
@@ -155,7 +157,7 @@ class SACAgent:
         q_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
 
         self.q_optimizer.zero_grad()
-        q_loss.backward()
+        q_loss.backward(retain_graph=True)
         self.q_optimizer.step()
 
         new_actions, log_prob = self.policy_net.sample(states)
@@ -166,6 +168,15 @@ class SACAgent:
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
         self.policy_optimizer.step()
+        
+        # --- Alpha loss (自动调节) ---
+        alpha_loss = None
+        if self.automatic_entropy_tuning:
+            alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            self.alpha = self.log_alpha.exp()  # 更新 alpha 实值
 
         # 更新目标Q网络
         with torch.no_grad():
@@ -174,7 +185,7 @@ class SACAgent:
             for target_param, param in zip(self.target_q_net.q2.parameters(), self.q_net.q2.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
                 
-        return q_loss.item(), policy_loss.item(), None
+        return q_loss.item(), policy_loss.item(), alpha_loss.item() if alpha_loss is not None else None
 
 
 

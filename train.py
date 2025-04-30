@@ -65,7 +65,10 @@ def train(env, render=False, resume=False, init_ckpt=None):
             # 为每个警察代理选择动作
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                action = sac_agent.get_action(agent_state)
+                if total_steps < 10000:
+                    action = env.action_space.sample()  # 随机动作
+                else:
+                    action = sac_agent.get_action(agent_state)
                 action_dict[f"agent_{i}"] = action
 
             # 执行动作并获得新的观察和奖励
@@ -84,11 +87,13 @@ def train(env, render=False, resume=False, init_ckpt=None):
                 writer.add_scalar(f"Agent_{i}_Reward", agent_reward, total_steps)
             
             # 更新SAC代理
-            q_loss, policy_loss, _ = sac_agent.update()
+            q_loss, policy_loss, alpha_loss = sac_agent.update()
             
-            if q_loss is not None:
+            if q_loss is not None :
                 writer.add_scalar("Q_Loss", q_loss, total_steps)
                 writer.add_scalar("Policy_Loss", policy_loss, total_steps)
+            if alpha_loss is not None:
+                writer.add_scalar("Alpha_Loss", alpha_loss, total_steps)
                 
 
             obs = next_obs
@@ -107,7 +112,7 @@ def train(env, render=False, resume=False, init_ckpt=None):
         writer.add_scalar("Episode_Reward", avg_reward, episode)
         writer.add_scalar("Episode_Length", episode_length, episode)
         
-        if total_steps % 1000 == 0:
+        if episode % 10 == 0:
             print(f"Current Episode: {episode}, Average Episode Reward: {avg_reward}")
             model_path = os.path.join(save_dir, f"sac_phase{args.training_phase}_{total_steps}.pth")
 

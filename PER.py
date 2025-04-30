@@ -39,6 +39,8 @@ class PrioritizedReplayBuffer:
             prios = self.priorities[:self.pos]
 
         probs = prios ** self.alpha
+        if np.sum(probs) == 0 or np.any(np.isnan(probs)):
+            probs = np.ones_like(probs)
         probs /= probs.sum()
 
         indices = np.random.choice(len(self.buffer), batch_size, p=probs)
@@ -50,6 +52,9 @@ class PrioritizedReplayBuffer:
         total = len(self.buffer)
         weights = (total * probs[indices]) ** (-beta)
         weights /= weights.max()
+        weights = torch.FloatTensor(weights)
+        weights = torch.nan_to_num(weights, nan=1.0, posinf=1.0, neginf=1.0)
+        
 
         states, actions, rewards, next_states, dones = zip(*samples)
 

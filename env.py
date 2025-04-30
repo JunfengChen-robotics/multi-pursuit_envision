@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+import shapely
 import yaml, os
 from police import PoliceAgent
 from thief import ThiefAgent
@@ -9,6 +10,7 @@ from matplotlib.patches import Polygon, Circle
 from matplotlib.path import Path
 from evader.core.evader import Evader
 from config.position import InitPos
+import random
 
 
 COLOR = [
@@ -70,22 +72,30 @@ class ChaseEnv(gym.Env):
                                 [[0, -0.2], [self.size, -0.2], [self.size, 0], [0, 0]]
                          ]
         self.discrete_size = world['map']['dx'][self.case]
-
         
+
     def generate_random_positions(self, robot_num):
-        def is_valid(pos, existing_positions, min_dist=0.5):
-            """检查位置是否在地图内、在障碍物外，并且离已有位置不太近"""
+        def is_valid(pos, existing_positions, min_dist=0.5, obs_margin=0.1):
+            """检查位置是否合法"""
             x, y = pos
             if not (0 < x < self.size and 0 < y < self.size):
                 return False
-            point = np.array([x, y])
-            if any(poly.contains_point(point) for poly in self.obstacles):
-                return False
-            if any(np.linalg.norm(np.array(pos) - np.array(p)) < min_dist for p in existing_positions):
-                return False
+            point = shapely.geometry.Point(x, y)
+
+            # 检查与障碍物的关系
+            for poly in self.obstacles:
+                if poly.contains(point):  # 在障碍物内部
+                    return False
+                if poly.exterior.distance(point) < obs_margin:  # 离边界太近
+                    return False
+
+            # 检查与已有点的最小距离
+            for p in existing_positions:
+                if np.linalg.norm(np.array(pos) - np.array(p)) < min_dist:
+                    return False
+
             return True
-        
-        import random
+
         positions = []
         max_trials = 1000
         for _ in range(robot_num):
@@ -97,6 +107,7 @@ class ChaseEnv(gym.Env):
                     break
             else:
                 raise RuntimeError("Failed to generate valid initial positions.")
+        
         return np.array(positions).round(1)
 
 
@@ -358,10 +369,13 @@ class ChaseEnv(gym.Env):
     
 
     def compute_a_star_path(self, start, goal):
-        """ 使用 networkx 计算A*路径，返回真实欧式距离（非步数） """
+        """ 使用 networkx 计算A*路径，返回真实欧式距离（非步数），自动修正非法点 """
         import networkx as nx 
         import shapely.geometry as shageo
-        import numpy as np
+
+        def euclidean_heuristic(a, b):
+            a, b = np.array(a), np.array(b)
+            return np.linalg.norm(a - b)
 
         # 创建网格图
         grid_size = int(self.size / self.discrete_size)
@@ -381,8 +395,33 @@ class ChaseEnv(gym.Env):
         start_grid = (int(start[0] / self.discrete_size), int(start[1] / self.discrete_size))
         goal_grid = (int(goal[0] / self.discrete_size), int(goal[1] / self.discrete_size))
 
-        if start_grid not in G or goal_grid not in G:
-            return float('inf')
+        def find_nearest_valid_node(pos_grid, graph_nodes):
+            """寻找距离 pos_grid 最近的合法图中节点"""
+            min_dist = float('inf')
+            best_node = None
+            for node in graph_nodes:
+                dist = euclidean_heuristic(pos_grid, node)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_node = node
+            return best_node
+
+        # 如果起点或终点不在图中，尝试修正为最近的合法节点
+        if start_grid not in G:
+            new_start = find_nearest_valid_node(start_grid, G.nodes)
+            if new_start is not None:
+                start_grid = new_start
+            else:
+                print("无法修复起点")
+                return float('inf')
+
+        if goal_grid not in G:
+            new_goal = find_nearest_valid_node(goal_grid, G.nodes)
+            if new_goal is not None:
+                goal_grid = new_goal
+            else:
+                print("无法修复终点")
+                return float('inf')
 
         # A*搜索
         try:
@@ -398,9 +437,10 @@ class ChaseEnv(gym.Env):
             return total_length
 
         except nx.NetworkXNoPath:
+            print("没有找到路径")
             return float('inf')
-    
-    
+
+        
     def is_in_sight(self, pos1, pos2, obs_info_local_,scout_range):
         """
         判断端口是否在 Evader 的视线范围内。判断evader 是否在pursuer 视线范围内。或pursuer是否在evader视线范围内。
@@ -435,14 +475,14 @@ class ChaseEnv(gym.Env):
         return True
     
     
-    def render(self):
+    def render(self, episode, episode_step):
         if not hasattr(self, 'fig'):
             self.fig, self.ax = plt.subplots(figsize=(6, 6))
             plt.ion()
             self.ax.set_xlim(0, self.size)
             self.ax.set_ylim(0, self.size)
             self.ax.set_aspect('equal')
-            self.ax.set_title(f"Police vs Thief in {self.training_phase}")
+            self.ax.set_title(f"Police vs Thief in {self.training_phase} in episode {episode} step {episode_step}")
             
             # 画障碍物，只画一次
             self.static_elements = []
@@ -532,13 +572,3 @@ class ChaseEnv(gym.Env):
                     return False
 
         return True
-
-
-def euclidean_heuristic(a, b):
-    """
-    计算点 a 和点 b 之间的欧几里得距离
-    :param a: 第一个点 (x1, y1)
-    :param b: 第二个点 (x2, y2)
-    :return: 欧几里得距离
-    """
-    return np.linalg.norm(np.array(a) - np.array(b))

@@ -60,7 +60,7 @@ def train(env, render=False, resume=False, init_ckpt=None):
         print(f"Episode {episode} started.")
         while not done and episode_length < args.max_episode_steps:
             if render:
-                env.render()
+                env.render(episode=episode, episode_step=episode_length)
             action_dict = {}
             # 为每个警察代理选择动作
             for i in range(env.num_police):

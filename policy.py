@@ -80,6 +80,7 @@ class PolicyNetwork(nn.Module):
 
         # 修正log_prob（因为action经过了tanh）
         log_prob -= torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        log_prob = torch.clamp(log_prob, min=-20, max=20)
 
         return action, log_prob
     
@@ -199,10 +200,13 @@ class SACAgent:
         
         # 修正：避免 td_errors 是标量
         td_errors = ((td_error1 + td_error2) / 2).detach().cpu().numpy().flatten()
+        # 强制修正 NaN 和 inf（防御式编程）
+        td_errors = np.nan_to_num(td_errors, nan=1.0, posinf=1.0, neginf=1.0)
         self.replay_buffer.update_priorities(indices, td_errors)
 
         self.q_optimizer.zero_grad()
         q_loss.backward(retain_graph=True)
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=10.0)
         self.q_optimizer.step()
 
         # new_actions, log_prob = self.policy_net.sample(states)

@@ -149,6 +149,8 @@ class SACAgent:
         rewards = rewards.to(device)
         dones = dones.to(device)
         next_states = next_states.to(device)
+        weights = weights.to(device)
+        indices = indices.to(device)
 
         q_loss= self._update_q_policy(states, actions, rewards, next_states, dones, weights,indices)
         

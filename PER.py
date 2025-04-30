@@ -60,12 +60,18 @@ class PrioritizedReplayBuffer:
             torch.FloatTensor(np.stack(next_states)),
             torch.FloatTensor(np.stack(dones)),
             torch.FloatTensor(weights),
-            indices
+            torch.FloatTensor(indices)
         )
-
+        
     def update_priorities(self, indices, td_errors):
+        # 转换为 numpy 数组（若为 Tensor）
+        if isinstance(indices, torch.Tensor):
+            indices = indices.detach().cpu().numpy()
+        if isinstance(td_errors, torch.Tensor):
+            td_errors = td_errors.detach().cpu().numpy()
+
         for i, td_error in zip(indices, td_errors):
-            self.priorities[i] = abs(td_error) + 1e-5  # ensure nonzero priority
+            self.priorities[int(i)] = abs(td_error) + 1e-5  # 强制索引为 Python int
 
     def __len__(self):
         return len(self.buffer)

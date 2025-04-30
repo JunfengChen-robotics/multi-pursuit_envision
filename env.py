@@ -84,6 +84,8 @@ class ChaseEnv(gym.Env):
 
             # 检查与障碍物的关系
             for poly in self.obstacles:
+                if not isinstance(poly, shapely.geometry.Polygon):
+                    poly = shapely.geometry.Polygon(poly.vertices)
                 if poly.contains(point):  # 在障碍物内部
                     return False
                 if poly.exterior.distance(point) < obs_margin:  # 离边界太近

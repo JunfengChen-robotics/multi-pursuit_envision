@@ -3,7 +3,7 @@ from shapely.geometry import Point, Polygon
 from matplotlib.path import Path
 
 class PoliceAgent:
-    def __init__(self, init_pos, id, obstacles, boundary):
+    def __init__(self, init_pos, id, obstacles, boundary, mapsize):
         self.state = np.array(init_pos, dtype=np.float32)
         self.id = id
         self.robot_radius = 0.1
@@ -11,15 +11,15 @@ class PoliceAgent:
         self.lidar_range = 3
         self.max_velocity = 1.2
         self.capture_range = 0.8
-        self.robot_distance = 0.1
         self.liard_readings = 36
         self.boundary = [Path(ob) for ob in boundary]
         self.init_state = self.state
+        self.mapsize = mapsize
 
     def update(self, action, dt):
        self.velocity = np.clip(action[:2], -self.max_velocity, self.max_velocity)
        self.state += self.velocity * dt
-       self.state = np.clip(self.state, 0, 8)
+       self.state = np.clip(self.state, 0, self.mapsize)
 
     def get_obs(self, thief_pos, obstacle_image):
         pos =self.state

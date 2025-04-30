@@ -143,12 +143,13 @@ class ChaseEnv(gym.Env):
         self.police_agents = [PoliceAgent(init_pos[i], 
                         id=i, 
                         obstacles=self.obstacles,
-                        boundary=self.boundary)
+                        boundary=self.boundary,
+                        mapsize=self.size)
             for i in range(self.num_police)]
         
         #  —— Phase0: 生成一个静态“目标点”给警察，No thief —— 
         if self.training_phase == 1:
-            self.thief = ThiefAgent(init_pos=init_pos[-1])
+            self.thief = ThiefAgent(init_pos=init_pos[-1], mapsize=self.size)
         else:
             self.thief = Evader(pos=init_pos[-1])
             self.thief.get_env_info(self.case)
@@ -171,7 +172,7 @@ class ChaseEnv(gym.Env):
         self.steps += 1
         current_positions = np.zeros((self.num_police+1, 2, 1))
         for i in range(self.num_police):
-            v = np.clip(action_dict[f"agent_{i}"][:2], -1, 1.0)
+            v = np.clip(action_dict[f"agent_{i}"][:2], -self.police_agents[i].max_velocity, self.police_agents[i].max_velocity)
             # 计算目标位置
             start_position = self.police_agents[i].state
             target_position = self.police_agents[i].state + v * self.dt
@@ -223,7 +224,6 @@ class ChaseEnv(gym.Env):
         for i in range(self.num_police):
             dist = self.police_to_thief_dict[i]
             in_sight = self.is_in_sight(self.police_agents[i].state, self.thief.state, self.vis_obstacles, self.police_agents[i].capture_range)
-            print(f"step = {self.steps}, agent {i} to thief distance = {dist:.2f}, in sight = {in_sight}")
             
         done_dict["__all__"] = any(done_dict.values())
         return obs, reward, done_dict, {}, {}
@@ -496,27 +496,42 @@ class ChaseEnv(gym.Env):
         plt.pause(0.01)
     
     
-    
-
     def is_valid_transition(self, start_pos, end_pos):
         """
         判断从 start_pos 移动到 end_pos 是否会穿过障碍物。
+        插值路径点，使用 contains + exterior.distance 检查。
         """
-        import shapely
-        movement_line = shapely.geometry.LineString([start_pos, end_pos])
-        point = shapely.geometry.Point(end_pos)
 
-        for obs_pts in self.vis_obstacles:
-            poly = shapely.geometry.Polygon(obs_pts)
-            # 检查终点是否落在障碍物内
-            if poly.contains(point) or poly.exterior.distance(point) <= 0.05:
-                return False
-            # 检查移动路径是否与障碍物相交（即“穿墙”）
-            if movement_line.intersects(poly):
-                return False
+        import numpy as np
+        from shapely.geometry import Point, Polygon
+
+        def interpolate_path(start, end, step_size=0.05):
+            direction = end - start
+            distance = np.linalg.norm(direction)
+            if distance == 0:
+                return [start]
+            steps = int(distance / step_size)
+            return [start + direction * (i / steps) for i in range(1, steps + 1)]
+
+        path_points = interpolate_path(np.array(start_pos), np.array(end_pos))
+        path_points.append(np.array(end_pos))  # 添加终点也参与检测
+
+        for point_array in path_points:
+            point = Point(point_array)
+
+            for obs_pts in self.vis_obstacles:
+                poly = Polygon(obs_pts)
+
+                # 1. 点是否在障碍物内
+                if poly.contains(point):
+                    return False
+
+                # 2. 点是否过于靠近障碍边界（用于“贴墙”检测）
+                if poly.exterior.distance(point) <= 0.05:
+                    return False
+
         return True
 
-        
 
 def euclidean_heuristic(a, b):
     """

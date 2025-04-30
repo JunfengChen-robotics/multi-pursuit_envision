@@ -11,14 +11,15 @@ def simple_thief_policy(thief_pos, police_positions):
 
 
 class ThiefAgent:
-    def __init__(self, init_pos):
+    def __init__(self, init_pos, mapsize=None):
         self.state = np.array(init_pos, dtype=np.float32)
+        self.mapsize = mapsize
 
     def update(self, police_positions):
         # 替换成复杂规则时只需要改这里
         direction = np.random.uniform(-1, 1, size=2)
         self.state += 0.1 * direction / np.linalg.norm(direction)
-        self.state = np.clip(self.state, 0, 8)
+        self.state = np.clip(self.state, 0, self.mapsize)
         
         
         

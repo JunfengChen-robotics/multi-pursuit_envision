@@ -485,6 +485,7 @@ class ChaseEnv(gym.Env):
             self.ax.set_ylim(0, self.size)
             self.ax.set_aspect('equal')
             self.ax.set_title(f"Police vs Thief in {self.training_phase} in episode {episode} step {episode_step}")
+
             
             # 画障碍物，只画一次
             self.static_elements = []
@@ -496,7 +497,9 @@ class ChaseEnv(gym.Env):
             # 可选：网格背景
             self.ax.set_xticks(np.arange(0, self.size + 1, 1))
             self.ax.set_yticks(np.arange(0, self.size + 1, 1))
-        
+
+        self.ax.set_title(f"Police vs Thief in {self.training_phase} in episode {episode} step {episode_step}")
+
         # 清除上一次的动态元素（警察、小偷、轨迹等）
         if hasattr(self, 'dynamic_elements'):
             for element in self.dynamic_elements:

@@ -28,7 +28,7 @@ def test(env, model_path, render=False):
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
-    sac_agent = SACAgent(state_dim, action_dim)
+    sac_agent = SACAgent(state_dim, action_dim, args.case)
     sac_agent.load(model_path)
     print(f"Loaded model from {model_path}")
 
@@ -44,12 +44,12 @@ def test(env, model_path, render=False):
         
         while not done:
             if render:
-                env.render()
+                env.render(episode, episode_length)
           
             action_dict = {}
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                action = sac_agent.get_action(agent_state)
+                action = sac_agent.get_action(agent_state, evaluate=True)
                 action_dict[f"agent_{i}"] = action
             
             next_obs, reward_dict, done_dict, _, _ = env.step(action_dict)

@@ -65,7 +65,10 @@ def train(env, render=False, resume=False, init_ckpt=None):
             # 为每个警察代理选择动作
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                action = env.action_space.sample()
+                if total_steps < 10000:
+                    action = env.action_space.sample()
+                else:
+                    action = sac_agent.get_action(agent_state)
                 action_dict[f"agent_{i}"] = action
 
             # 执行动作并获得新的观察和奖励

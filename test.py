@@ -49,7 +49,7 @@ def test(env, model_path, render=False):
             action_dict = {}
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                action = sac_agent.get_action(agent_state)
+                action = sac_agent.get_action(agent_state, evaluate=True)
                 action_dict[f"agent_{i}"] = action
             
             next_obs, reward_dict, done_dict, _, _ = env.step(action_dict)

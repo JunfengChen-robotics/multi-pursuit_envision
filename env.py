@@ -31,11 +31,12 @@ class ChaseEnv(gym.Env):
         self.construct_world()
         self.size = self.size
         self.dt = 0.05
+        self.max_velocity = 1.0
         # action: [dx, dy, turn_rate]
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-self.max_velocity, high=self.max_velocity, shape=(2,), dtype=np.float32)
 
         # observation: lidar (360 directions) + self pos + thief pos
-        self.observation_space = spaces.Box(low=0, high=10, shape=(40,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=10, shape=(38,), dtype=np.float32)
 
         self.obstacles = [Path(ob) for ob in self.vis_obstacles]
         self.train_or_test = args.train_or_test
@@ -103,37 +104,55 @@ class ChaseEnv(gym.Env):
                                           obstacles=self.obstacles,
                                           boundary=self.boundary)
                               for i in range(self.num_police)]
-        self.trajectories= np.empty((self.num_police+1, 2, 0))
+        if self.train_or_test == 'test':
+            self.trajectories= np.empty((self.num_police+1, 2, 0))
         # initialization of evader
         # ===================================
-        # self.thief = ThiefAgent(init_pos=init_pos[-1])
-        self.thief = Evader(pos=init_pos[-1])
-        self.thief.get_env_info(self.case)
-        self.thief.update_env(self.police_agents)
+        if self.train_or_test == 'train':
+            self.thief = ThiefAgent(init_pos=init_pos[-1], mapsize=self.size)
+        elif self.train_or_test == 'test':
+            self.thief = Evader(pos=init_pos[-1])
+            self.thief.get_env_info(self.case)
+            self.thief.update_env(self.police_agents)
         # ====================================
         self.steps = 0
         obs = {f"agent_{p.id}": p.get_obs(self.thief.state) for p in self.police_agents}
         return obs, {}
+    
 
     def step(self, action_dict):
         self.steps += 1
-        current_positions = np.zeros((self.num_police+1, 2, 1))
+        if self.train_or_test == "test":
+            current_positions = np.zeros((self.num_police+1, 2, 1))
         for i in range(self.num_police):
-            v = np.clip(action_dict[f"agent_{i}"][:2], -1, 1.0)
-            self.police_agents[i].update(v, self.dt)
-            current_positions[i, :, 0] = self.police_agents[i].state
+            v = np.clip(action_dict[f"agent_{i}"][:2], -self.max_velocity, self.max_velocity)
+            if self.train_or_test == "train":
+                self.police_agents[i].update(v, self.dt)
+            if self.train_or_test == "test":
+                start_position = self.police_agents[i].state
+                target_position = self.police_agents[i].state + v * self.dt
+                if self.is_valid_transition(start_position, target_position):
+                    # 如果目标位置有效，则更新警察位置
+                    self.police_agents[i].update(v, self.dt)
+                else:
+                    # 如果目标位置无效，则警察位置不更新
+                    pass
+                    # print(f"警察{i}的目标位置无效，保持原位置")
+                current_positions[i, :, 0] = self.police_agents[i].state
 
         # evader execution
         # ==============================
-        # self.thief.update([agent.state for agent in self.police_agents])
-        self.thief.local_info_and_collision_check(self.police_agents) 
-        self.thief.update_env(self.police_agents)
-        self.thief.update_memory()
-        self.thief.select_goal()
-        self.thief.sel_stgy()
-        self.thief.move()
-        current_positions[-1, :, 0] = self.thief.state
-        self.trajectories = np.concatenate([self.trajectories, current_positions], axis=2)
+        if self.train_or_test == "train":
+            self.thief.update()
+        elif self.train_or_test == "test":
+            self.thief.local_info_and_collision_check(self.police_agents) 
+            self.thief.update_env(self.police_agents)
+            self.thief.update_memory()
+            self.thief.select_goal()
+            self.thief.sel_stgy()
+            self.thief.move()
+            current_positions[-1, :, 0] = self.thief.state
+            self.trajectories = np.concatenate([self.trajectories, current_positions], axis=2)
         # ==============================
 
         obs = {f"agent_{i}": self.police_agents[i].get_obs(self.thief.state) for i in range(self.num_police)}
@@ -179,8 +198,6 @@ class ChaseEnv(gym.Env):
         return True
     
     
-    
-    
     def compute_reward(self, idx):
         agent = self.police_agents[idx]
         reward = 0.0
@@ -196,15 +213,8 @@ class ChaseEnv(gym.Env):
         # 3. 是否撞墙（激光雷达值小于机器人半径）
         lidar_scan = agent._lidar(self.thief.state)
         if np.any(lidar_scan <= agent.robot_radius+0.1):
-            reward -= 10.0
+            reward -= 5.0
 
-        # 4. 是否撞到其他警察
-        for j, other_agent in enumerate(self.police_agents):
-            if j != idx:
-                dist = np.linalg.norm(agent.state - other_agent.state)
-                if dist <= 2* agent.robot_radius:
-                    reward -= 5.0
-        
         # 5. 是否撞到障碍物
         from shapely.geometry import Polygon, Point
         agent_point = Point(agent.state)
@@ -215,59 +225,106 @@ class ChaseEnv(gym.Env):
                 collided_with_boundary = True
                 break
         if collided_with_boundary:
-            reward -= 10.0
+            reward -= 5
 
         return reward
     
     
-    def render(self):
+    def render(self, episode, episode_step):
         if not hasattr(self, 'fig'):
             self.fig, self.ax = plt.subplots(figsize=(6, 6))
             plt.ion()
             self.ax.set_xlim(0, self.size)
             self.ax.set_ylim(0, self.size)
             self.ax.set_aspect('equal')
+            self.ax.set_title(f"Police vs Thief in episode {episode} step {episode_step}")
 
-        self.ax.clear()
-        self.ax.set_xlim(0, self.size)
-        self.ax.set_ylim(0, self.size)
-        self.ax.set_title("Police vs Thief")
+        # 画障碍物，只画一次
+            self.static_elements = []
+            for poly in self.vis_obstacles:
+                p = Polygon(poly, closed=True, facecolor='black', edgecolor='black')
+                self.ax.add_patch(p)
+                self.static_elements.append(p)
+                
+            # 可选：网格背景
+            self.ax.set_xticks(np.arange(0, self.size + 1, 1))
+            self.ax.set_yticks(np.arange(0, self.size + 1, 1))
 
-        # 画障碍物
-        for poly in self.vis_obstacles:
-            p = Polygon(poly, closed=True, facecolor='black', edgecolor='black')
-            self.ax.add_patch(p)
+        self.ax.set_title(f"Police vs Thief in episode {episode} step {episode_step}")
+
+        # 清除上一次的动态元素（警察、小偷、轨迹等）
+        if hasattr(self, 'dynamic_elements'):
+            for element in self.dynamic_elements:
+                element.remove()
+                
+        self.dynamic_elements = []
 
         # 画警察（绿色圆形）
         for id, agent in enumerate(self.police_agents):
             x, y = agent.state[0], agent.state[1]
-            self.ax.scatter(x, y, marker='o', color=COLOR[id], s=200, edgecolor=COLOR[id], linewidth=2)
-            self.ax.text(agent.state[0]+0.1, agent.state[1]+0.1, str(agent.id), fontsize=12, ha='center', va='center', color='red')
+            sc = self.ax.scatter(x, y, marker='o', color=COLOR[id], s=200, edgecolor=COLOR[id], linewidth=2)
+            txt = self.ax.text(agent.state[0]+0.1, agent.state[1]+0.1, str(agent.id), fontsize=12, ha='center', va='center', color='red')
             c_a = Circle(agent.state, radius=agent.capture_range, color=COLOR[id], alpha=0.2)
             self.ax.add_patch(c_a)
+            self.dynamic_elements.extend([sc, txt, c_a])
             if self.train_or_test == "test":
-                self.ax.plot(self.trajectories[id, 0, :], self.trajectories[id, 1, :], color=COLOR[id], linewidth=5.0, linestyle='-')
-            
+                traj_line, = self.ax.plot(self.trajectories[id, 0, :], self.trajectories[id, 1, :], color=COLOR[id], linewidth=5.0, linestyle='-')
+                self.dynamic_elements.append(traj_line)
+                
             if self.train_or_test == "train":
                 # 画雷达线束
                 readings = agent._lidar(agent.state)
                 angles = np.linspace(0, 2 * np.pi, agent.liard_readings, endpoint=False)
                 for r, angle in zip(readings, angles):
                     end_point = agent.state + r * np.array([np.cos(angle), np.sin(angle)])
-                    self.ax.plot([agent.state[0], end_point[0]], [agent.state[1], end_point[1]], color='black', linewidth=1.0, linestyle='--', zorder=1)
-                    self.ax.plot(end_point[0], end_point[1], 'yo', markersize=6, zorder=5)
+                    radar_line, = self.ax.plot([agent.state[0], end_point[0]], [agent.state[1], end_point[1]], color='black', linewidth=1.0, linestyle='--', zorder=1)
+                    radar_dot, = self.ax.plot(end_point[0], end_point[1], 'yo', markersize=6, zorder=5)
+                    self.dynamic_elements.extend([radar_line, radar_dot])
 
         # 画小偷（红色三角形）
         t_x, t_y = self.thief.state[0], self.thief.state[1]
-        self.ax.scatter(t_x, t_y, marker='^', color=COLOR[-1], s=200, edgecolor=COLOR[-1], linewidth=2)
-        self.ax.plot(self.thief.modified_goal_pos[0], self.thief.modified_goal_pos[1], marker='s', color='red', markersize=6, fillstyle='none', alpha=0.3)
+        thief_marker = self.ax.scatter(t_x, t_y, marker='^', color=COLOR[-1], s=200, edgecolor=COLOR[-1], linewidth=2)
+        self.dynamic_elements.append(thief_marker)
         if self.train_or_test == "test":
-            self.ax.plot(self.trajectories[-1, 0, :], self.trajectories[-1, 1, :], color=COLOR[-1], linewidth=5.0, linestyle='-')
-
-        # 可选：网格背景
-        self.ax.set_xticks(np.arange(0, self.size + 1, 1))
-        self.ax.set_yticks(np.arange(0, self.size + 1, 1))
+            goal_marker, = self.ax.plot(self.thief.modified_goal_pos[0], self.thief.modified_goal_pos[1], marker='s', color='red', markersize=6, fillstyle='none', alpha=0.3)
+            self.dynamic_elements.append(goal_marker)
+            thief_traj, = self.ax.plot(self.trajectories[-1, 0, :], self.trajectories[-1, 1, :], color=COLOR[-1], linewidth=5.0, linestyle='-')
+            self.dynamic_elements.append(thief_traj)
 
         plt.pause(0.01)
         
         
+    def is_valid_transition(self, start_pos, end_pos):
+        """
+        判断从 start_pos 移动到 end_pos 是否会穿过障碍物。
+        插值路径点，使用 contains + exterior.distance 检查。
+        """
+        import numpy as np
+        from shapely.geometry import Point, Polygon
+
+        def interpolate_path(start, end, step_size=0.05):
+            direction = end - start
+            distance = np.linalg.norm(direction)
+            if distance == 0:
+                return [start]
+            steps = int(distance / step_size)
+            return [start + direction * (i / steps) for i in range(1, steps + 1)]
+
+        path_points = interpolate_path(np.array(start_pos), np.array(end_pos))
+        path_points.append(np.array(end_pos))  # 添加终点也参与检测
+
+        for point_array in path_points:
+            point = Point(point_array)
+
+            for obs_pts in self.vis_obstacles:
+                poly = Polygon(obs_pts)
+
+                # 1. 点是否在障碍物内
+                if poly.contains(point):
+                    return False
+
+                # 2. 点是否过于靠近障碍边界（用于“贴墙”检测）
+                if poly.exterior.distance(point) <= 0.05:
+                    return False
+
+        return True

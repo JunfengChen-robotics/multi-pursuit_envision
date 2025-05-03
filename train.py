@@ -4,9 +4,38 @@ from policy import SACAgent
 from torch.utils.tensorboard import SummaryWriter
 import os
 import argparse
+import re
 
 
-def train(env, render=False):
+def get_latest_checkpoint(checkpoint_dir):
+    """
+    获取指定阶段的最新模型检查点文件，选择最大步数的文件。
+    """
+    # 获取所有的模型文件
+    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.startswith(f"sac_")]
+    
+    if not checkpoint_files:
+        return None
+    
+    # 使用正则表达式提取步数
+    step_pattern = re.compile(r'sac_\d+_(\d+).pth')
+    
+    # 找到最大步数的文件
+    latest_step = -1
+    latest_ckpt = None
+    for checkpoint in checkpoint_files:
+        match = step_pattern.search(checkpoint)
+        if match:
+            step = int(match.group(1))
+            if step > latest_step:
+                latest_step = step
+                latest_ckpt = checkpoint
+
+    return os.path.join(checkpoint_dir, latest_ckpt)
+
+
+
+def train(env, render=False, resume=False, init_ckpt=None):
     
     # 设置TensorBoard日志目录
     log_dir = "logs/"+args.case
@@ -19,6 +48,10 @@ def train(env, render=False):
     action_dim = env.action_space.shape[0]
     
     sac_agent = SACAgent(state_dim, action_dim)
+    if resume and init_ckpt is not None:
+        print(f"→ Loading weights from {init_ckpt}")
+        sac_agent.load(init_ckpt)
+        
     total_steps = 0
     episode = 0
     while total_steps < args.max_steps:
@@ -30,12 +63,15 @@ def train(env, render=False):
         print(f"Episode {episode} started.")
         while not done:
             if render:
-                env.render()
+                env.render(episode=episode, episode_step=episode_length)   
             action_dict = {}
             # 为每个警察代理选择动作
             for i in range(env.num_police):
                 agent_state = obs[f"agent_{i}"]
-                action = sac_agent.get_action(agent_state)
+                if total_steps < 5000:
+                    action = env.action_space.sample()
+                else:
+                    action = sac_agent.get_action(agent_state)
                 action_dict[f"agent_{i}"] = action
 
             # 执行动作并获得新的观察和奖励
@@ -59,7 +95,6 @@ def train(env, render=False):
             if q_loss is not None:
                 writer.add_scalar("Q_Loss", q_loss, total_steps)
                 writer.add_scalar("Policy_Loss", policy_loss, total_steps)
-                
 
             obs = next_obs
             total_steps += 1
@@ -77,7 +112,7 @@ def train(env, render=False):
         writer.add_scalar("Episode_Reward", avg_reward, episode)
         writer.add_scalar("Episode_Length", episode_length, episode)
         
-        if total_steps % 1000 == 0:
+        if episode % 10 == 0:
             print(f"Current Episode: {episode}, Average Episode Reward: {avg_reward}")
             model_path = os.path.join(save_dir, f"sac_checkpoint_{total_steps}.pth")
             sac_agent.save(model_path)
@@ -95,4 +130,13 @@ if __name__ == "__main__":
     argparser.add_argument("--max_steps", type=int, default=10000000, help="Maximum number of steps.")
     args = argparser.parse_args()
     env = ChaseEnv(args)
-    train(env, render=args.render)
+    prev_ckpt = get_latest_checkpoint("checkpoints/"+args.case)
+    if prev_ckpt:
+        print(f"Loading previous checkpoint from {prev_ckpt}")
+    
+    train(env, 
+          render=args.render,
+          resume = (prev_ckpt is not None),
+          init_ckpt = prev_ckpt)
+
+    print("Training completed.")

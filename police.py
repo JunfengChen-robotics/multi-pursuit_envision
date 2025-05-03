@@ -9,10 +9,10 @@ class PoliceAgent:
         self.robot_radius = 0.1
         self.obstacles = obstacles
         self.lidar_range = 3
-        self.max_velocity = 1.0
         self.capture_range = 0.8
         self.robot_distance = 0.1
         self.liard_readings = 36
+        self.max_velocity = 1.0
         self.boundary = [Path(ob) for ob in boundary]
 
     def update(self, action, dt):
@@ -25,7 +25,7 @@ class PoliceAgent:
         rel_thief = thief_pos - pos
         lidar_scan = self._lidar(pos)
         
-        return np.concatenate([lidar_scan,self.state, rel_thief])
+        return np.concatenate([lidar_scan, rel_thief])
     
     def _lidar(self, pos):
         readings = []
